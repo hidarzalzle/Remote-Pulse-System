@@ -1,0 +1,330 @@
+@using System.Globalization
+@using System.Net.Http.Json
+@namespace Frontend.Wasm.Pages
+@page "/"
+@inject HttpClient Http
+@inject Frontend.Wasm.Services.BackendApiOptions BackendApiOptions
+@inject Frontend.Wasm.Services.PulseStreamClient StreamClient
+@implements IDisposable
+@implements IAsyncDisposable
+
+<PageTitle>RemotePulse Dashboard</PageTitle>
+
+<div class="dashboard-shell">
+    <section class="hero-panel">
+        <div>
+            <p class="eyebrow">Realtime operations dashboard</p>
+            <h1>RemotePulse Command Center</h1>
+            <p class="hero-copy">
+                Monitor live pulse traffic, recent telemetry behavior, and connection health from one focused control surface.
+            </p>
+        </div>
+
+        <div class="connection-pill @GetConnectionStateClass()">
+            <span class="status-dot"></span>
+            <span>@_connectionStatus</span>
+        </div>
+    </section>
+
+    <section class="metrics-grid">
+        <article class="metric-card accent-primary">
+            <span class="metric-label">Realtime pulse events</span>
+            <strong class="metric-value">@_totalCount</strong>
+            <span class="metric-footnote">Total records observed in the system.</span>
+        </article>
+
+        <article class="metric-card accent-secondary">
+            <span class="metric-label">Last BPM</span>
+            <strong class="metric-value">@_lastBpm</strong>
+            <span class="metric-footnote">Latest pulse value received from the stream.</span>
+        </article>
+
+        <article class="metric-card accent-tertiary">
+            <span class="metric-label">Rolling average</span>
+            <strong class="metric-value">@_averageBpm.ToString("0.0", CultureInfo.InvariantCulture)</strong>
+            <span class="metric-footnote">Average BPM across the last @_recentPulses.Count tracked events.</span>
+        </article>
+
+        <article class="metric-card accent-highlight">
+            <span class="metric-label">Pulse trend</span>
+            <strong class="metric-value">@_trendLabel</strong>
+            <span class="metric-footnote">Compared against the most recent rolling average.</span>
+        </article>
+    </section>
+
+    <section class="content-grid">
+        <article class="panel chart-panel">
+            <div class="panel-header">
+                <div>
+                    <p class="panel-title">Recent BPM wave</p>
+                    <p class="panel-subtitle">Last @Math.Max(_recentPulses.Count, 0) events rendered as a sparkline.</p>
+                </div>
+                <span class="badge">Peak @(_recentPulses.Count == 0 ? 0 : _recentPulses.Max(x => x.Bpm)) BPM</span>
+            </div>
+
+            @if (_recentPulses.Count == 0)
+            {
+                <p class="empty-state">Waiting for incoming pulse telemetry.</p>
+            }
+            else
+            {
+                <svg class="sparkline" viewBox="0 0 100 40" preserveAspectRatio="none" role="img" aria-label="Recent BPM trend">
+                    <defs>
+                        <linearGradient id="pulse-gradient" x1="0" x2="0" y1="0" y2="1">
+                            <stop offset="0%" stop-color="#7dd3fc" stop-opacity="0.9" />
+                            <stop offset="100%" stop-color="#38bdf8" stop-opacity="0.1" />
+                        </linearGradient>
+                    </defs>
+                    <polygon points="@_sparklineAreaPoints" class="sparkline-area"></polygon>
+                    <polyline points="@_sparklinePoints" class="sparkline-line"></polyline>
+                </svg>
+            }
+        </article>
+
+        <article class="panel insights-panel">
+            <div class="panel-header">
+                <div>
+                    <p class="panel-title">Live insights</p>
+                    <p class="panel-subtitle">Calculated directly from the active pulse feed.</p>
+                </div>
+            </div>
+
+            <div class="insight-list">
+                <div class="insight-item">
+                    <span>Signal quality</span>
+                    <strong>@_signalQuality</strong>
+                </div>
+                <div class="insight-item">
+                    <span>Latest source</span>
+                    <strong>@(_recentPulses.FirstOrDefault()?.Source ?? "No source yet")</strong>
+                </div>
+                <div class="insight-item">
+                    <span>Last observed</span>
+                    <strong>@FormatTimestamp(_lastObservedAtUtc)</strong>
+                </div>
+                <div class="insight-item">
+                    <span>Range</span>
+                    <strong>@_minimumBpm - @_maximumBpm BPM</strong>
+                </div>
+            </div>
+        </article>
+
+        <article class="panel sources-panel">
+            <div class="panel-header">
+                <div>
+                    <p class="panel-title">Source activity</p>
+                    <p class="panel-subtitle">Share of the latest pulses by emitting source.</p>
+                </div>
+            </div>
+
+            @if (_sourceBreakdown.Count == 0)
+            {
+                <p class="empty-state">No source activity to summarize yet.</p>
+            }
+            else
+            {
+                <div class="source-list">
+                    @foreach (var item in _sourceBreakdown)
+                    {
+                        <div class="source-row">
+                            <div class="source-meta">
+                                <strong>@item.Source</strong>
+                                <span>@item.Count event(s)</span>
+                            </div>
+                            <div class="source-bar-track">
+                                <div class="source-bar-fill" style="width: @(item.Percentage)%"></div>
+                            </div>
+                            <span class="source-percentage">@item.Percentage%</span>
+                        </div>
+                    }
+                </div>
+            }
+        </article>
+
+        <article class="panel feed-panel">
+            <div class="panel-header">
+                <div>
+                    <p class="panel-title">Recent pulse feed</p>
+                    <p class="panel-subtitle">Newest events arrive instantly through SignalR.</p>
+                </div>
+            </div>
+
+            @if (_recentPulses.Count == 0)
+            {
+                <p class="empty-state">No pulses available yet.</p>
+            }
+            else
+            {
+                <div class="feed-list">
+                    @foreach (var pulse in _recentPulses.Take(8))
+                    {
+                        <div class="feed-item">
+                            <div>
+                                <strong>@pulse.Bpm BPM</strong>
+                                <p>@pulse.Source</p>
+                            </div>
+                            <span>@FormatTimestamp(pulse.ObservedAtUtc)</span>
+                        </div>
+                    }
+                </div>
+            }
+        </article>
+    </section>
+</div>
+
+@code {
+    private const int MaxTrackedPulses = 24;
+
+    private readonly List<Frontend.Wasm.Services.PulseRecordMessage> _recentPulses = [];
+    private List<SourceMetric> _sourceBreakdown = [];
+    private string _connectionStatus = "Offline";
+    private string _trendLabel = "Stable";
+    private string _signalQuality = "Awaiting data";
+    private string _sparklinePoints = string.Empty;
+    private string _sparklineAreaPoints = string.Empty;
+    private int _totalCount;
+    private int _lastBpm;
+    private int _minimumBpm;
+    private int _maximumBpm;
+    private double _averageBpm;
+    private DateTimeOffset? _lastObservedAtUtc;
+
+    protected override async Task OnInitializedAsync()
+    {
+        StreamClient.PulseReceived += OnPulseReceived;
+        StreamClient.ConnectionStatusChanged += OnConnectionStatusChanged;
+
+        var summary = await Http.GetFromJsonAsync<HealthSummaryDto>("health/summary");
+        var latest = await Http.GetFromJsonAsync<List<Frontend.Wasm.Services.PulseRecordMessage>>("api/pulses/latest");
+
+        _totalCount = summary?.TotalRecords ?? 0;
+        _lastObservedAtUtc = summary?.LastObservedAtUtc;
+
+        if (latest is not null)
+        {
+            _recentPulses.AddRange(latest
+                .OrderByDescending(x => x.ObservedAtUtc)
+                .Take(MaxTrackedPulses));
+        }
+
+        RefreshDerivedState(summary?.AverageBpm);
+        await StreamClient.StartAsync(BackendApiOptions.BaseUri, CancellationToken.None);
+    }
+
+    private void OnPulseReceived(Frontend.Wasm.Services.PulseRecordMessage pulse)
+    {
+        _totalCount++;
+        _lastObservedAtUtc = pulse.ObservedAtUtc;
+
+        _recentPulses.Insert(0, pulse);
+        if (_recentPulses.Count > MaxTrackedPulses)
+        {
+            _recentPulses.RemoveAt(_recentPulses.Count - 1);
+        }
+
+        RefreshDerivedState();
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private void OnConnectionStatusChanged(string status)
+    {
+        _connectionStatus = status;
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private void RefreshDerivedState(double? fallbackAverage = null)
+    {
+        _lastBpm = _recentPulses.FirstOrDefault()?.Bpm ?? 0;
+        _minimumBpm = _recentPulses.Count == 0 ? 0 : _recentPulses.Min(x => x.Bpm);
+        _maximumBpm = _recentPulses.Count == 0 ? 0 : _recentPulses.Max(x => x.Bpm);
+        _averageBpm = _recentPulses.Count == 0
+            ? fallbackAverage ?? 0
+            : _recentPulses.Average(x => x.Bpm);
+
+        _trendLabel = _recentPulses.Count switch
+        {
+            < 2 => "Stable",
+            _ when _lastBpm >= _averageBpm + 8 => "Rising",
+            _ when _lastBpm <= _averageBpm - 8 => "Falling",
+            _ => "Stable"
+        };
+
+        var range = _maximumBpm - _minimumBpm;
+        _signalQuality = range switch
+        {
+            0 when _recentPulses.Count == 0 => "Awaiting data",
+            <= 12 => "Steady",
+            <= 25 => "Elevated variance",
+            _ => "High variance"
+        };
+
+        _sourceBreakdown = _recentPulses
+            .GroupBy(x => x.Source)
+            .Select(group => new SourceMetric(
+                group.Key,
+                group.Count(),
+                (int)Math.Round(group.Count() * 100d / _recentPulses.Count, MidpointRounding.AwayFromZero)))
+            .OrderByDescending(x => x.Count)
+            .ThenBy(x => x.Source)
+            .ToList();
+
+        BuildSparkline();
+    }
+
+    private void BuildSparkline()
+    {
+        if (_recentPulses.Count == 0)
+        {
+            _sparklinePoints = string.Empty;
+            _sparklineAreaPoints = string.Empty;
+            return;
+        }
+
+        var points = _recentPulses
+            .Select(pulse => pulse.Bpm)
+            .Reverse()
+            .Select((bpm, index) => new { Bpm = bpm, Index = index })
+            .ToList();
+
+        var min = points.Min(x => x.Bpm);
+        var max = points.Max(x => x.Bpm);
+        var range = Math.Max(1, max - min);
+
+        var coordinates = points.Select(point =>
+        {
+            var x = points.Count == 1 ? 50 : point.Index * (100d / (points.Count - 1));
+            var normalized = (point.Bpm - min) / (double)range;
+            var y = 34 - (normalized * 28);
+            return $"{x.ToString("0.##", CultureInfo.InvariantCulture)},{y.ToString("0.##", CultureInfo.InvariantCulture)}";
+        }).ToList();
+
+        _sparklinePoints = string.Join(" ", coordinates);
+        _sparklineAreaPoints = $"0,38 {_sparklinePoints} 100,38";
+    }
+
+    private string FormatTimestamp(DateTimeOffset? timestamp)
+        => timestamp?.ToLocalTime().ToString("MMM dd, HH:mm:ss", CultureInfo.InvariantCulture) ?? "Awaiting pulse";
+
+    private string GetConnectionStateClass() => _connectionStatus.ToLowerInvariant() switch
+    {
+        "live" => "is-live",
+        "connecting" => "is-connecting",
+        "reconnecting" => "is-reconnecting",
+        _ => "is-offline"
+    };
+
+    public void Dispose()
+    {
+        StreamClient.PulseReceived -= OnPulseReceived;
+        StreamClient.ConnectionStatusChanged -= OnConnectionStatusChanged;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        Dispose();
+        await StreamClient.DisposeAsync();
+    }
+
+    private sealed record HealthSummaryDto(int TotalRecords, DateTimeOffset? LastObservedAtUtc, double AverageBpm);
+    private sealed record SourceMetric(string Source, int Count, int Percentage);
+}

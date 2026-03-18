@@ -1,0 +1,99 @@
+version: "3.9"
+
+name: remotepulse
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: remotepulse-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: remotepulse
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - remotepulse-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d remotepulse"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend-api:
+    image: mcr.microsoft.com/dotnet/nightly/sdk:10.0
+    container_name: remotepulse-backend-api
+    working_dir: /workspace
+    command: >
+      bash -lc "rm -rf src/Backend.Api/bin src/Backend.Api/obj src/ServiceDefaults/bin src/ServiceDefaults/obj &&
+      dotnet restore src/Backend.Api/Backend.Api.csproj --disable-parallel --force-evaluate &&
+      dotnet run --project src/Backend.Api/Backend.Api.csproj -c Release --no-restore"
+    environment:
+      ConnectionStrings__remotepulse: Host=postgres;Port=5432;Database=remotepulse;Username=postgres;Password=postgres
+      ASPNETCORE_ENVIRONMENT: Development
+      NUGET_PACKAGES: /tmp/nuget-packages
+      NUGET_HTTP_CACHE_PATH: /tmp/nuget-http-cache
+    ports:
+      - "5001:5001"
+    volumes:
+      - ./:/workspace
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - bash -lc '</dev/tcp/127.0.0.1/5001'
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker-ingestion:
+    image: mcr.microsoft.com/dotnet/nightly/sdk:10.0
+    container_name: remotepulse-worker-ingestion
+    working_dir: /workspace
+    command: >
+      bash -lc "rm -rf src/Worker.Ingestion/bin src/Worker.Ingestion/obj src/ServiceDefaults/bin src/ServiceDefaults/obj &&
+      dotnet restore src/Worker.Ingestion/Worker.Ingestion.csproj --disable-parallel --force-evaluate &&
+      dotnet run --project src/Worker.Ingestion/Worker.Ingestion.csproj -c Release --no-restore"
+    environment:
+      services__backend-api__http__0: http://backend-api:5001
+      DOTNET_ENVIRONMENT: Development
+      NUGET_PACKAGES: /tmp/nuget-packages
+      NUGET_HTTP_CACHE_PATH: /tmp/nuget-http-cache
+    volumes:
+      - ./:/workspace
+    depends_on:
+      backend-api:
+        condition: service_healthy
+
+  frontend-host:
+    image: mcr.microsoft.com/dotnet/nightly/sdk:10.0
+    container_name: remotepulse-frontend-host
+    working_dir: /workspace
+    command:
+      - bash
+      - -lc
+      - >
+        rm -rf /tmp/dotnet &&
+        mkdir -p /tmp/dotnet/bin /tmp/dotnet/obj &&
+        dotnet restore src/Frontend.Host/Frontend.Host.csproj --artifacts-path /tmp/dotnet --disable-parallel --force-evaluate -p:Configuration=Release &&
+        ASPNETCORE_URLS=http://0.0.0.0:5003
+        dotnet run --project src/Frontend.Host/Frontend.Host.csproj -c Release --no-restore --no-launch-profile --artifacts-path /tmp/dotnet
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      NUGET_PACKAGES: /nuget/packages
+      NUGET_HTTP_CACHE_PATH: /nuget/http-cache
+    ports:
+      - "5003:5003"
+    volumes:
+      - ./:/workspace
+      - remotepulse-nuget:/nuget
+    depends_on:
+      backend-api:
+        condition: service_healthy
+volumes:
+  remotepulse-pgdata:
+  remotepulse-nuget:

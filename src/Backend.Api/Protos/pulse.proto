@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+option csharp_namespace = "Backend.Api.Features.PulseRecords";
+
+import "google/protobuf/timestamp.proto";
+
+service PulseIngestion {
+  rpc IngestPulse (IngestPulseRequest) returns (IngestPulseReply);
+}
+
+message IngestPulseRequest {
+  string id = 1;
+  google.protobuf.Timestamp observed_at = 2;
+  int32 bpm = 3;
+  string source = 4;
+}
+
+message IngestPulseReply {
+  bool accepted = 1;
+  string error = 2;
+}
