@@ -15,7 +15,7 @@ var backend = builder.AddProject<Projects.Backend_Api>(
         isProxied: false)
     .WithReference(database)
     .WaitFor(database)
-    .WithHttpHealthCheck("/health", endpointName: "http");
+    .WithHttpHealthCheck("/health");
 
 builder.AddProject<Projects.Worker_Ingestion>("worker-ingestion")
     .WithReference(backend)
